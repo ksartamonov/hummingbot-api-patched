@@ -106,6 +106,8 @@ class TelegramService:
         pnl_quote = results.get('net_pnl_quote', 0)
         total_return = results.get('net_pnl_pct', 0)  # если есть процентная метрика
         sharpe_ratio = results.get('sharpe_ratio', 0)
+        sortino_ratio = results.get('sortino_ratio', 0)
+        calmar_ratio = results.get('calmar_ratio', 0)
         max_drawdown_pct = results.get('max_drawdown_pct', 0)
         max_drawdown_usd = results.get('max_drawdown_usd', 0)
         total_trades = results.get('total_positions', 0)
@@ -133,6 +135,8 @@ class TelegramService:
         pnl_quote = safe_value(pnl_quote)
         total_return = safe_value(total_return)
         sharpe_ratio = safe_value(sharpe_ratio)
+        sortino_ratio = safe_value(sortino_ratio)
+        calmar_ratio = safe_value(calmar_ratio)
         max_drawdown_pct = safe_value(max_drawdown_pct)
         max_drawdown_usd = safe_value(max_drawdown_usd)
         total_trades = safe_value(total_trades)
@@ -154,7 +158,10 @@ class TelegramService:
         logger.info(f"  results values: {results}")
         logger.info(f"  PnL (USD): {pnl_absolute}")
         logger.info(f"  PnL (Quote): {pnl_quote}")
+        logger.info(f"  Total Return: {total_return}")
         logger.info(f"  Sharpe Ratio: {sharpe_ratio}")
+        logger.info(f"  Sortino Ratio: {sortino_ratio}")
+        logger.info(f"  Calmar Ratio: {calmar_ratio}")
         logger.info(f"  Max Drawdown %: {max_drawdown_pct}")
         logger.info(f"  Max Drawdown USD: {max_drawdown_usd}")
         logger.info(f"  Total Trades: {total_trades}")
@@ -167,6 +174,16 @@ class TelegramService:
         logger.info(f"  Profit Factor: {profit_factor}")
         logger.info(f"  Win/Loss Signals: {win_signals}/{loss_signals}")
         
+        # Дополнительное логирование для коэффициентов
+        logger.info(f"  === COEFFICIENTS DEBUG ===")
+        logger.info(f"  Raw results sharpe_ratio: {results.get('sharpe_ratio', 'NOT_FOUND')}")
+        logger.info(f"  Raw results sortino_ratio: {results.get('sortino_ratio', 'NOT_FOUND')}")
+        logger.info(f"  Raw results calmar_ratio: {results.get('calmar_ratio', 'NOT_FOUND')}")
+        logger.info(f"  Calculated sharpe_ratio: {sharpe_ratio}")
+        logger.info(f"  Calculated sortino_ratio: {sortino_ratio}")
+        logger.info(f"  Calculated calmar_ratio: {calmar_ratio}")
+        logger.info(f"  === END COEFFICIENTS DEBUG ===")
+        
         # Create message
         message = f"""
 🚀 <b>Backtesting Results Summary</b>
@@ -178,7 +195,10 @@ class TelegramService:
 📊 <b>Performance Metrics:</b>
 • PnL (USD): <b>{pnl_absolute:.4f}</b>
 • PnL (Quote): <b>{pnl_quote:.4f}</b>
-• Sharpe Ratio: <b>{sharpe_ratio:.2f}</b>
+• Total Return: <b>{total_return:.2f}%</b>
+• Sharpe Ratio: <b>{sharpe_ratio:.4f}</b>
+• Sortino Ratio: <b>{sortino_ratio:.4f}</b>
+• Calmar Ratio: <b>{calmar_ratio:.4f}</b>
 • Max Drawdown: <b>{max_drawdown_pct:.2f}%</b>
 • Max Drawdown (USD): <b>{max_drawdown_usd:.4f}</b>
 • Total Trades: <b>{total_trades}</b>

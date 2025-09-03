@@ -1,4 +1,5 @@
 import logging
+import numpy as np
 from fastapi import APIRouter
 from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory
 from hummingbot.strategy_v2.backtesting.backtesting_engine_base import BacktestingEngineBase
@@ -12,6 +13,93 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Backtesting"], prefix="/backtesting")
 candles_factory = CandlesFactory()
 backtesting_engine = BacktestingEngineBase()
+
+
+def calculate_performance_ratios(results: dict) -> dict:
+    """
+    Рассчитывает коэффициенты эффективности на основе результатов бэктеста.
+    
+    Args:
+        results: Словарь с результатами бэктеста
+        
+    Returns:
+        Словарь с рассчитанными коэффициентами
+    """
+    try:
+        # Получаем базовые метрики
+        net_pnl_pct = results.get("net_pnl_pct", 0)
+        max_drawdown_pct = results.get("max_drawdown_pct", 0)
+        
+        # Инициализируем коэффициенты
+        sharpe_ratio = results.get("sharpe_ratio", 0)
+        sortino_ratio = 0
+        calmar_ratio = 0
+        
+        # Логируем входные данные
+        logger.info(f"Input data - net_pnl_pct: {net_pnl_pct}, max_drawdown_pct: {max_drawdown_pct}")
+        
+        # Рассчитываем коэффициенты только если есть PnL
+        if net_pnl_pct != 0:
+            # Конвертируем в десятичные
+            pnl_decimal = float(net_pnl_pct) / 100
+            
+            # Sortino Ratio = доходность / стандартное отклонение убытков
+            # Для упрощения используем предполагаемое стандартное отклонение 1%
+            if net_pnl_pct < 0:
+                # Отрицательный PnL: Sortino = PnL / 1%
+                sortino_ratio = pnl_decimal / 0.01
+                logger.info(f"Negative PnL: {net_pnl_pct}%, Sortino = {pnl_decimal} / 0.01 = {sortino_ratio}")
+            elif net_pnl_pct > 0:
+                # Положительный PnL без убытков: высокое значение
+                sortino_ratio = 999.99
+                logger.info(f"Positive PnL: {net_pnl_pct}%, Sortino = 999.99")
+            else:
+                sortino_ratio = 0
+                logger.info(f"Zero PnL: {net_pnl_pct}%, Sortino = 0")
+            
+            # Calmar Ratio = доходность / максимальная просадка
+            if max_drawdown_pct != 0:
+                max_drawdown_decimal = abs(float(max_drawdown_pct) / 100)
+                if max_drawdown_decimal > 0:
+                    calmar_ratio = pnl_decimal / max_drawdown_decimal
+                    logger.info(f"MaxDD: {max_drawdown_pct}%, Calmar = {pnl_decimal} / {max_drawdown_decimal} = {calmar_ratio}")
+                else:
+                    calmar_ratio = 0
+                    logger.info(f"MaxDD is 0, Calmar = 0")
+            else:
+                # Если max_drawdown не указан, используем минимальную просадку 1%
+                calmar_ratio = pnl_decimal / 0.01
+                logger.info(f"No MaxDD, using default 1%, Calmar = {pnl_decimal} / 0.01 = {calmar_ratio}")
+        else:
+            # Если PnL = 0, устанавливаем коэффициенты в 0
+            sortino_ratio = 0
+            calmar_ratio = 0
+            logger.info(f"Zero PnL, setting both ratios to 0")
+        
+        # Проверяем и ограничиваем значения
+        if not np.isfinite(sharpe_ratio):
+            sharpe_ratio = 0
+        if not np.isfinite(sortino_ratio):
+            sortino_ratio = 0
+        if not np.isfinite(calmar_ratio):
+            calmar_ratio = 0
+            
+        # Логируем расчеты
+        logger.info(f"Calculated ratios - PnL: {net_pnl_pct}%, Sharpe: {sharpe_ratio:.6f}, Sortino: {sortino_ratio:.6f}, Calmar: {calmar_ratio:.6f}")
+        
+        return {
+            "sharpe_ratio": sharpe_ratio,
+            "sortino_ratio": sortino_ratio,
+            "calmar_ratio": calmar_ratio
+        }
+        
+    except Exception as e:
+        logger.error(f"Error calculating performance ratios: {e}")
+        return {
+            "sharpe_ratio": 0,
+            "sortino_ratio": 0,
+            "calmar_ratio": 0
+        }
 
 
 def _clean_config_data(config_data: dict) -> dict:
@@ -155,8 +243,16 @@ async def run_backtesting(backtesting_config: BacktestingConfig):
         # Safely process results
         try:
             results = backtesting_results.get("results", {})
-            if "sharpe_ratio" in results:
-                results["sharpe_ratio"] = results["sharpe_ratio"] if results["sharpe_ratio"] is not None else 0
+            
+            # Рассчитываем коэффициенты эффективности
+            ratios = calculate_performance_ratios(results)
+            
+            # Обновляем результаты с рассчитанными коэффициентами
+            results.update(ratios)
+            
+            # Логируем обновленные результаты
+            logger.info(f"Updated results with calculated ratios: {list(results.keys())}")
+            
         except Exception as e:
             print(f"Warning: Error processing results: {e}")
             results = {}
