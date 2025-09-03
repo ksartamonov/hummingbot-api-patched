@@ -1,10 +1,10 @@
 import asyncio
-import json
 import io
+import json
+import logging
 import zipfile
 from datetime import datetime
-from typing import Dict, List, Optional, Any
-import logging
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from telegram import Bot
@@ -100,12 +100,72 @@ class TelegramService:
         start_time = datetime.fromtimestamp(config.get('start_time', 0))
         end_time = datetime.fromtimestamp(config.get('end_time', 0))
         
-        # Calculate key metrics
-        total_return = results.get('total_return', 0)
+        # Calculate key metrics - используем правильные ключи из результатов бэктеста
+        # Основные метрики
+        pnl_absolute = results.get('net_pnl', 0)
+        pnl_quote = results.get('net_pnl_quote', 0)
+        total_return = results.get('net_pnl_pct', 0)  # если есть процентная метрика
         sharpe_ratio = results.get('sharpe_ratio', 0)
-        max_drawdown = results.get('max_drawdown', 0)
-        total_trades = results.get('total_trades', 0)
-        win_rate = results.get('win_rate', 0)
+        max_drawdown_pct = results.get('max_drawdown_pct', 0)
+        max_drawdown_usd = results.get('max_drawdown_usd', 0)
+        total_trades = results.get('total_positions', 0)
+        accuracy = results.get('accuracy', 0)
+        
+        # Дополнительные метрики
+        total_executors = results.get('total_executors', 0)
+        total_executors_with_position = results.get('total_executors_with_position', 0)
+        total_volume = results.get('total_volume', 0)
+        total_long = results.get('total_long', 0)
+        total_short = results.get('total_short', 0)
+        accuracy_long = results.get('accuracy_long', 0)
+        accuracy_short = results.get('accuracy_short', 0)
+        profit_factor = results.get('profit_factor', 0)
+        win_signals = results.get('win_signals', 0)
+        loss_signals = results.get('loss_signals', 0)
+        
+        # Проверяем на None/NaN и заменяем на 0
+        def safe_value(value):
+            if value is None or (hasattr(value, 'isna') and value.isna()):
+                return 0
+            return value
+        
+        pnl_absolute = safe_value(pnl_absolute)
+        pnl_quote = safe_value(pnl_quote)
+        total_return = safe_value(total_return)
+        sharpe_ratio = safe_value(sharpe_ratio)
+        max_drawdown_pct = safe_value(max_drawdown_pct)
+        max_drawdown_usd = safe_value(max_drawdown_usd)
+        total_trades = safe_value(total_trades)
+        accuracy = safe_value(accuracy)
+        total_executors = safe_value(total_executors)
+        total_executors_with_position = safe_value(total_executors_with_position)
+        total_volume = safe_value(total_volume)
+        total_long = safe_value(total_long)
+        total_short = safe_value(total_short)
+        accuracy_long = safe_value(accuracy_long)
+        accuracy_short = safe_value(accuracy_short)
+        profit_factor = safe_value(profit_factor)
+        win_signals = safe_value(win_signals)
+        loss_signals = safe_value(loss_signals)
+        
+        # Логируем для отладки
+        logger.info(f"Telegram metrics calculation:")
+        logger.info(f"  results keys: {list(results.keys())}")
+        logger.info(f"  results values: {results}")
+        logger.info(f"  PnL (USD): {pnl_absolute}")
+        logger.info(f"  PnL (Quote): {pnl_quote}")
+        logger.info(f"  Sharpe Ratio: {sharpe_ratio}")
+        logger.info(f"  Max Drawdown %: {max_drawdown_pct}")
+        logger.info(f"  Max Drawdown USD: {max_drawdown_usd}")
+        logger.info(f"  Total Trades: {total_trades}")
+        logger.info(f"  Accuracy: {accuracy}")
+        logger.info(f"  Total Executors: {total_executors}")
+        logger.info(f"  Active Positions: {total_executors_with_position}")
+        logger.info(f"  Total Volume: {total_volume}")
+        logger.info(f"  Long/Short: {total_long}/{total_short}")
+        logger.info(f"  Long/Short Accuracy: {accuracy_long}/{accuracy_short}")
+        logger.info(f"  Profit Factor: {profit_factor}")
+        logger.info(f"  Win/Loss Signals: {win_signals}/{loss_signals}")
         
         # Create message
         message = f"""
@@ -116,27 +176,61 @@ class TelegramService:
 💰 <b>Trade Cost:</b> {config.get('trade_cost', 0):.4f}
 
 📊 <b>Performance Metrics:</b>
-• Total Return: <b>{total_return:.2%}</b>
+• PnL (USD): <b>{pnl_absolute:.4f}</b>
+• PnL (Quote): <b>{pnl_quote:.4f}</b>
 • Sharpe Ratio: <b>{sharpe_ratio:.2f}</b>
-• Max Drawdown: <b>{max_drawdown:.2%}</b>
+• Max Drawdown: <b>{max_drawdown_pct:.2f}%</b>
+• Max Drawdown (USD): <b>{max_drawdown_usd:.4f}</b>
 • Total Trades: <b>{total_trades}</b>
-• Win Rate: <b>{win_rate:.2%}</b>
+• Accuracy: <b>{accuracy:.2f}%</b>
+
+📈 <b>Position Details:</b>
+• Total Executors: <b>{total_executors}</b>
+• Active Positions: <b>{total_executors_with_position}</b>
+• Total Volume: <b>{total_volume:.4f}</b>
+• Long Positions: <b>{total_long}</b>
+• Short Positions: <b>{total_short}</b>
+
+🎯 <b>Directional Accuracy:</b>
+• Long Accuracy: <b>{accuracy_long:.2f}%</b>
+• Short Accuracy: <b>{accuracy_short:.2f}%</b>
+• Profit Factor: <b>{profit_factor:.2f}</b>
+• Win Signals: <b>{win_signals}</b>
+• Loss Signals: <b>{loss_signals}</b>
 
 🤖 <b>Executors:</b> {len(executors)} active
 
 📈 <b>Strategy:</b> {self._extract_strategy_name(config)}
+
+🔍 <b>All Available Metrics:</b>
+• {', '.join([f'{k}: {v:.4f}' if isinstance(v, (int, float)) else f'{k}: {v}' for k, v in results.items() if v is not None and v != 0]) if any(v is not None and v != 0 for v in results.values()) else 'No additional metrics available'}
         """.strip()
         
         return message
     
     def _extract_strategy_name(self, config: Dict[str, Any]) -> str:
         """Extract strategy name from configuration."""
+        # Сначала проверяем controller_name
+        if config.get('controller_name'):
+            return config['controller_name'].replace('_', ' ').title()
+        
+        # Затем проверяем config.controller_name
         if isinstance(config.get('config'), dict):
-            return config['config'].get('strategy_name', 'Unknown Strategy')
+            controller_name = config['config'].get('controller_name')
+            if controller_name:
+                return controller_name.replace('_', ' ').title()
+            
+            strategy_name = config['config'].get('strategy_name')
+            if strategy_name:
+                return strategy_name.replace('_', ' ').title()
+        
+        # Затем проверяем config как строку
         elif isinstance(config.get('config'), str):
             # Try to extract from file path
-            return config['config'].split('/')[-1].replace('.yml', '').replace('.yaml', '')
-        return 'Unknown Strategy'
+            return config['config'].split('/')[-1].replace('.yml', '').replace('.yaml', '').replace('_', ' ').title()
+        
+        # Если ничего не найдено, возвращаем PMM Dynamic как дефолт
+        return 'PMM Dynamic'
     
     def _stringify(self, v: Any) -> str:
         """Convert complex objects to string representation."""
