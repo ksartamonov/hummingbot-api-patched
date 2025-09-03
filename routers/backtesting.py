@@ -15,107 +15,137 @@ candles_factory = CandlesFactory()
 backtesting_engine = BacktestingEngineBase()
 
 
-def calculate_performance_ratios(results: dict) -> dict:
+def calculate_performance_ratios(results: dict, executors: list | None = None) -> dict:
     """
-    Рассчитывает коэффициенты эффективности на основе результатов бэктеста.
-    
-    Args:
-        results: Словарь с результатами бэктеста
-        
-    Returns:
-        Словарь с рассчитанными коэффициентами
+    Корректный расчёт Sortino и Calmar.
+    - returns сделки -> доли
+    - частота годовая оценивается из длительности периода
     """
     try:
-        # Получаем базовые метрики
-        net_pnl_pct = results.get("net_pnl_pct", 0)
-        max_drawdown_pct = results.get("max_drawdown_pct", 0)
-        
-        # Инициализируем коэффициенты
-        sharpe_ratio = results.get("sharpe_ratio", 0)
-        sortino_ratio = 0
-        calmar_ratio = 0
-        
-        # Логируем входные данные
-        logger.info(f"Input data - net_pnl_pct: {net_pnl_pct}, max_drawdown_pct: {max_drawdown_pct}")
-        
-        # Рассчитываем коэффициенты только если есть PnL
-        if net_pnl_pct != 0:
-            # Конвертируем в десятичные
-            pnl_decimal = float(net_pnl_pct) / 100
-            
-            # Sortino Ratio = доходность / стандартное отклонение убытков
-            # Для упрощения используем предполагаемое стандартное отклонение 1%
-            if net_pnl_pct < 0:
-                # Отрицательный PnL: Sortino = PnL / 1%
-                sortino_ratio = pnl_decimal / 0.01
-                logger.info(f"Negative PnL: {net_pnl_pct}%, Sortino = {pnl_decimal} / 0.01 = {sortino_ratio}")
-            elif net_pnl_pct > 0:
-                # Положительный PnL без убытков: высокое значение
-                sortino_ratio = 999.99
-                logger.info(f"Positive PnL: {net_pnl_pct}%, Sortino = 999.99")
-            else:
-                sortino_ratio = 0
-                logger.info(f"Zero PnL: {net_pnl_pct}%, Sortino = 0")
-            
-            # Calmar Ratio = доходность / максимальная просадка
-            if max_drawdown_pct != 0:
-                max_drawdown_decimal = abs(float(max_drawdown_pct) / 100)
-                if max_drawdown_decimal > 0:
-                    calmar_ratio = pnl_decimal / max_drawdown_decimal
-                    logger.info(f"MaxDD: {max_drawdown_pct}%, Calmar = {pnl_decimal} / {max_drawdown_decimal} = {calmar_ratio}")
+        net_pnl_pct = float(results.get("net_pnl_pct", 0) or 0.0)
+        max_drawdown_pct = results.get("max_drawdown_pct")
+        sharpe_ratio = float(results.get("sharpe_ratio", 0) or 0.0)
+
+        # Длительность периода
+        start_ts = results.get("start_time")
+        end_ts = results.get("end_time")
+        n_days = (end_ts - start_ts) / 86400.0 if (start_ts and end_ts and end_ts > start_ts) else None
+
+        logger.info(f"Input data - net_pnl_pct: {net_pnl_pct}, max_drawdown_pct: {max_drawdown_pct}, n_days: {n_days}")
+        print(f"🔍 DEBUG: Input data - net_pnl_pct: {net_pnl_pct}, max_drawdown_pct: {max_drawdown_pct}, n_days: {n_days}")
+
+        # ---- Готовим ряд доходностей (по сделкам) в долях ----
+        r_list = []
+        if executors:
+            for ex in executors:
+                pnl_pct = None
+                if isinstance(ex, dict):
+                    pnl_pct = ex.get("pnl_pct") or ex.get("net_pnl_pct")
+                    if pnl_pct is None and "net_pnl" in ex and "amount" in ex:
+                        try:
+                            amt = float(ex["amount"])
+                            if amt != 0:
+                                pnl_pct = float(ex["net_pnl"]) / amt * 100.0
+                        except Exception:
+                            pass
                 else:
-                    calmar_ratio = 0
-                    logger.info(f"MaxDD is 0, Calmar = 0")
-            else:
-                # Если max_drawdown не указан, используем минимальную просадку 1%
-                calmar_ratio = pnl_decimal / 0.01
-                logger.info(f"No MaxDD, using default 1%, Calmar = {pnl_decimal} / 0.01 = {calmar_ratio}")
+                    # объект с атрибутами
+                    if hasattr(ex, "pnl_pct"):
+                        pnl_pct = ex.pnl_pct
+                    elif hasattr(ex, "net_pnl") and hasattr(ex, "amount"):
+                        try:
+                            amt = float(ex.amount)
+                            if amt != 0:
+                                pnl_pct = float(ex.net_pnl) / amt * 100.0
+                        except Exception:
+                            pass
+
+                if pnl_pct is not None:
+                    r_list.append(float(pnl_pct) / 100.0)  # в долях
+
+        r = np.asarray(r_list, dtype=float)
+        print(f"🔍 DEBUG: Prepared returns array: {len(r)} returns, sample: {r[:5] if len(r) > 0 else 'empty'}")
+
+        # ---- Оцениваем годовую частоту ----
+        # Если знаем длительность в днях — оценим частоту как (кол-во наблюдений в день) * 365
+        if n_days and n_days > 0 and len(r) > 1:
+            periods_per_year = (len(r) / n_days) * 365.0
         else:
-            # Если PnL = 0, устанавливаем коэффициенты в 0
-            sortino_ratio = 0
-            calmar_ratio = 0
-            logger.info(f"Zero PnL, setting both ratios to 0")
+            # разумный дефолт, если ничего не знаем
+            periods_per_year = 252.0
         
-        # Дополнительная проверка: если коэффициенты все еще 0, попробуем альтернативный расчет
-        if sortino_ratio == 0 and net_pnl_pct != 0:
-            # Альтернативный расчет Sortino
-            if net_pnl_pct > 0:
-                sortino_ratio = 999.99
-            elif net_pnl_pct < 0:
-                sortino_ratio = float(net_pnl_pct) / 100 / 0.01
-            logger.info(f"Alternative Sortino calculation: {sortino_ratio}")
-        
-        if calmar_ratio == 0 and net_pnl_pct != 0:
-            # Альтернативный расчет Calmar
-            if max_drawdown_pct != 0:
-                calmar_ratio = float(net_pnl_pct) / 100 / abs(float(max_drawdown_pct) / 100)
+        print(f"🔍 DEBUG: Estimated periods_per_year: {periods_per_year:.2f}")
+
+        # ---- Sortino ----
+        if len(r) > 1:
+            target = 0.0
+            downside = np.minimum(r - target, 0.0)
+            dd = float(np.sqrt(np.mean(np.square(downside))))
+            mu_excess = float(np.mean(r - target))
+            if dd > 0:
+                sortino_ratio = (mu_excess / dd) * np.sqrt(periods_per_year)
+                print(f"🔍 DEBUG: Sortino calculation - mu_excess: {mu_excess:.6f}, dd: {dd:.6f}, periods_per_year: {periods_per_year:.2f}, Sortino: {sortino_ratio:.6f}")
             else:
-                calmar_ratio = float(net_pnl_pct) / 100 / 0.01
-            logger.info(f"Alternative Calmar calculation: {calmar_ratio}")
-        
-        # Проверяем и ограничиваем значения
-        if not np.isfinite(sharpe_ratio):
-            sharpe_ratio = 0
-        if not np.isfinite(sortino_ratio):
-            sortino_ratio = 0
-        if not np.isfinite(calmar_ratio):
-            calmar_ratio = 0
-            
-        # Логируем расчеты
-        logger.info(f"Calculated ratios - PnL: {net_pnl_pct}%, Sharpe: {sharpe_ratio:.6f}, Sortino: {sortino_ratio:.6f}, Calmar: {calmar_ratio:.6f}")
-        
-        return {
-            "sharpe_ratio": sharpe_ratio,
+                sortino_ratio = np.inf if mu_excess > 0 else 0.0
+                print(f"🔍 DEBUG: Sortino - no downside deviation, setting to {'inf' if mu_excess > 0 else '0'}")
+        else:
+            sortino_ratio = 0.0  # данных мало — вернём 0
+            print(f"🔍 DEBUG: Sortino - insufficient data ({len(r)} returns), setting to 0")
+
+        # ---- Calmar ----
+        # CAGR
+        if n_days and n_days > 0:
+            total_return = float(net_pnl_pct) / 100.0
+            cagr = (1.0 + total_return) ** (365.0 / n_days) - 1.0
+            print(f"🔍 DEBUG: Calmar CAGR calculation - total_return: {total_return:.6f}, n_days: {n_days:.2f}, CAGR: {cagr:.6f}")
+        elif len(r) > 0:
+            total_return = float(np.prod(1.0 + r) - 1.0)
+            # аппроксимация: приводим к годовой через эффективную частоту
+            cagr = (1.0 + total_return) ** (periods_per_year / max(len(r), 1)) - 1.0
+            print(f"🔍 DEBUG: Calmar CAGR from returns - total_return: {total_return:.6f}, cagr: {cagr:.6f}")
+        else:
+            cagr = 0.0
+            print(f"🔍 DEBUG: Calmar CAGR - no data, setting to 0")
+
+        # MaxDD: берём из results, если нет — считаем по кумулятивной доходности
+        if max_drawdown_pct is not None:
+            max_dd = abs(float(max_drawdown_pct)) / 100.0
+            print(f"🔍 DEBUG: Calmar MaxDD from results: {max_dd:.6f}")
+        elif len(r) > 1:
+            eq = np.cumprod(1.0 + r)
+            peaks = np.maximum.accumulate(eq)
+            dd_path = eq / peaks - 1.0
+            max_dd = -float(np.min(dd_path))  # положительное число
+            print(f"🔍 DEBUG: Calmar MaxDD calculated from equity curve: {max_dd:.6f}")
+        else:
+            max_dd = 0.0
+            print(f"🔍 DEBUG: Calmar MaxDD - no data, setting to 0")
+
+        if max_dd > 0:
+            calmar_ratio = cagr / max_dd
+            print(f"🔍 DEBUG: Calmar ratio calculation - CAGR: {cagr:.6f}, MaxDD: {max_dd:.6f}, Calmar: {calmar_ratio:.6f}")
+        else:
+            calmar_ratio = np.inf if cagr > 0 else 0.0
+            print(f"🔍 DEBUG: Calmar ratio - MaxDD is 0, setting to {'inf' if cagr > 0 else '0'}")
+
+        # Возвращаем без «обнуления» inf — так честнее для аналитики
+        result = {
+            "sharpe_ratio": sharpe_ratio if np.isfinite(sharpe_ratio) else 0.0,
             "sortino_ratio": sortino_ratio,
-            "calmar_ratio": calmar_ratio
+            "calmar_ratio": calmar_ratio,
         }
+        
+        print(f"🔍 DEBUG: Final ratios - Sharpe: {result['sharpe_ratio']:.6f}, Sortino: {result['sortino_ratio']}, Calmar: {result['calmar_ratio']}")
+        
+        return result
         
     except Exception as e:
         logger.error(f"Error calculating performance ratios: {e}")
+        print(f"🔍 DEBUG: Error calculating ratios: {e}")
         return {
-            "sharpe_ratio": 0,
-            "sortino_ratio": 0,
-            "calmar_ratio": 0
+            "sharpe_ratio": 0.0,
+            "sortino_ratio": 0.0,
+            "calmar_ratio": 0.0,
         }
 
 
@@ -262,7 +292,7 @@ async def run_backtesting(backtesting_config: BacktestingConfig):
             results = backtesting_results.get("results", {})
             
             # Рассчитываем коэффициенты эффективности
-            ratios = calculate_performance_ratios(results)
+            ratios = calculate_performance_ratios(results, executors_info)
             
             # Обновляем результаты с рассчитанными коэффициентами
             results.update(ratios)

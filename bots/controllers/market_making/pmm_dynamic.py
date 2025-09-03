@@ -93,6 +93,10 @@ class PMMDynamicController(MarketMakingControllerBase):
                                                            trading_pair=self.config.candles_trading_pair,
                                                            interval=self.config.interval,
                                                            max_records=self.max_records)
+        
+        # Создаем копию DataFrame чтобы избежать SettingWithCopyWarning
+        candles = candles.copy()
+        
         natr = ta.natr(candles["high"], candles["low"], candles["close"], length=self.config.natr_length) / 100
         macd_output = ta.macd(candles["close"], fast=self.config.macd_fast,
                               slow=self.config.macd_slow, signal=self.config.macd_signal)
@@ -102,8 +106,11 @@ class PMMDynamicController(MarketMakingControllerBase):
         macdh_signal = macdh.apply(lambda x: 1 if x > 0 else -1)
         max_price_shift = natr / 2
         price_multiplier = ((0.5 * macd_signal + 0.5 * macdh_signal) * max_price_shift).iloc[-1]
-        candles.loc[:, "spread_multiplier"] = natr
-        candles.loc[:, "reference_price"] = candles["close"] * (1 + price_multiplier)
+        
+        # Теперь безопасно добавляем новые колонки
+        candles["spread_multiplier"] = natr
+        candles["reference_price"] = candles["close"] * (1 + price_multiplier)
+        
         self.processed_data = {
             "reference_price": Decimal(candles["reference_price"].iloc[-1]),
             "spread_multiplier": Decimal(candles["spread_multiplier"].iloc[-1]),
