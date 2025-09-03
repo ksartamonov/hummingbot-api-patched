@@ -76,6 +76,23 @@ def calculate_performance_ratios(results: dict) -> dict:
             calmar_ratio = 0
             logger.info(f"Zero PnL, setting both ratios to 0")
         
+        # Дополнительная проверка: если коэффициенты все еще 0, попробуем альтернативный расчет
+        if sortino_ratio == 0 and net_pnl_pct != 0:
+            # Альтернативный расчет Sortino
+            if net_pnl_pct > 0:
+                sortino_ratio = 999.99
+            elif net_pnl_pct < 0:
+                sortino_ratio = float(net_pnl_pct) / 100 / 0.01
+            logger.info(f"Alternative Sortino calculation: {sortino_ratio}")
+        
+        if calmar_ratio == 0 and net_pnl_pct != 0:
+            # Альтернативный расчет Calmar
+            if max_drawdown_pct != 0:
+                calmar_ratio = float(net_pnl_pct) / 100 / abs(float(max_drawdown_pct) / 100)
+            else:
+                calmar_ratio = float(net_pnl_pct) / 100 / 0.01
+            logger.info(f"Alternative Calmar calculation: {calmar_ratio}")
+        
         # Проверяем и ограничиваем значения
         if not np.isfinite(sharpe_ratio):
             sharpe_ratio = 0
