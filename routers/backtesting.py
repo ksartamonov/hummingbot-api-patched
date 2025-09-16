@@ -1,12 +1,13 @@
 import logging
 import numpy as np
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory
 from hummingbot.strategy_v2.backtesting.backtesting_engine_base import BacktestingEngineBase
 
 from config import settings
-from models.backtesting import BacktestingConfig
+from models.backtesting import BacktestingConfig, BatchBacktestingConfig, BatchBacktestingResult
 from services.telegram_service import telegram_service
+from services.batch_backtesting_service import batch_backtesting_service
 
 logger = logging.getLogger(__name__)
 
@@ -344,3 +345,197 @@ async def run_backtesting(backtesting_config: BacktestingConfig):
         )
         
         return {"error": error_msg}
+
+
+@router.post("/run-batch-backtesting")
+async def run_batch_backtesting(batch_config: BatchBacktestingConfig):
+    """
+    Запускает пакетный бектест с множественными конфигурациями.
+    
+    Args:
+        batch_config: Конфигурация для пакетного бектестинга
+        
+    Returns:
+        Dictionary с task_id для отслеживания прогресса
+    """
+    try:
+        # Валидация
+        if not batch_config.configs:
+            raise HTTPException(status_code=400, detail="No configurations provided")
+        
+        if len(batch_config.configs) > 1000:  # Ограничение на количество конфигураций
+            raise HTTPException(status_code=400, detail="Too many configurations (max 1000)")
+        
+        # Запускаем пакетный бектест
+        task_id = await batch_backtesting_service.start_batch_backtesting(batch_config)
+        
+        # Отправляем уведомление о начале
+        await telegram_service.send_simple_notification(
+            f"🚀 <b>Batch Backtesting Started</b>\n\n"
+            f"📊 Configurations: {len(batch_config.configs)}\n"
+            f"📅 Period: {batch_config.start_time} - {batch_config.end_time}\n"
+            f"⏱️ Resolution: {batch_config.backtesting_resolution}\n"
+            f"💰 Trade Cost: {batch_config.trade_cost}\n"
+            f"🔄 Max Concurrent: {batch_config.max_concurrent or 5}\n"
+            f"🆔 Task ID: {task_id}"
+        )
+        
+        return {
+            "task_id": task_id,
+            "status": "started",
+            "total_configs": len(batch_config.configs),
+            "max_concurrent": batch_config.max_concurrent or 5
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = f"Failed to start batch backtesting: {str(e)}"
+        logger.error(error_msg)
+        
+        # Отправляем уведомление об ошибке
+        await telegram_service.send_simple_notification(
+            f"❌ <b>Batch Backtesting Failed to Start</b>\n\n"
+            f"Error: {error_msg}"
+        )
+        
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
+@router.get("/batch-backtesting-status/{task_id}")
+async def get_batch_backtesting_status(task_id: str):
+    """
+    Получает статус пакетного бектеста.
+    
+    Args:
+        task_id: ID задачи
+        
+    Returns:
+        Статус задачи и прогресс
+    """
+    try:
+        result = batch_backtesting_service.get_task_status(task_id)
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        return {
+            "task_id": result.task_id,
+            "status": result.status,
+            "total_configs": result.total_configs,
+            "completed_configs": result.completed_configs,
+            "failed_configs": result.failed_configs,
+            "progress_percentage": result.progress_percentage,
+            "results_count": len(result.results),
+            "errors_count": len(result.errors)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = f"Failed to get batch backtesting status: {str(e)}"
+        logger.error(error_msg)
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
+@router.get("/batch-backtesting-results/{task_id}")
+async def get_batch_backtesting_results(task_id: str):
+    """
+    Получает результаты пакетного бектеста.
+    
+    Args:
+        task_id: ID задачи
+        
+    Returns:
+        Полные результаты бектеста
+    """
+    try:
+        result = batch_backtesting_service.get_task_status(task_id)
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        return {
+            "task_id": result.task_id,
+            "status": result.status,
+            "total_configs": result.total_configs,
+            "completed_configs": result.completed_configs,
+            "failed_configs": result.failed_configs,
+            "progress_percentage": result.progress_percentage,
+            "results": result.results,
+            "errors": result.errors
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = f"Failed to get batch backtesting results: {str(e)}"
+        logger.error(error_msg)
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
+@router.get("/batch-backtesting-tasks")
+async def get_all_batch_backtesting_tasks():
+    """
+    Получает список всех активных задач пакетного бектестинга.
+    
+    Returns:
+        Список всех задач
+    """
+    try:
+        tasks = batch_backtesting_service.get_all_tasks()
+        
+        # Возвращаем только основную информацию о задачах
+        task_summaries = []
+        for task_id, result in tasks.items():
+            task_summaries.append({
+                "task_id": result.task_id,
+                "status": result.status,
+                "total_configs": result.total_configs,
+                "completed_configs": result.completed_configs,
+                "failed_configs": result.failed_configs,
+                "progress_percentage": result.progress_percentage
+            })
+        
+        return {
+            "tasks": task_summaries,
+            "total_tasks": len(task_summaries)
+        }
+        
+    except Exception as e:
+        error_msg = f"Failed to get batch backtesting tasks: {str(e)}"
+        logger.error(error_msg)
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
+@router.delete("/batch-backtesting-tasks/{task_id}")
+async def delete_batch_backtesting_task(task_id: str):
+    """
+    Удаляет задачу пакетного бектестинга.
+    
+    Args:
+        task_id: ID задачи
+        
+    Returns:
+        Статус удаления
+    """
+    try:
+        result = batch_backtesting_service.get_task_status(task_id)
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        # Удаляем задачу
+        del batch_backtesting_service.active_tasks[task_id]
+        
+        return {
+            "task_id": task_id,
+            "status": "deleted"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = f"Failed to delete batch backtesting task: {str(e)}"
+        logger.error(error_msg)
+        raise HTTPException(status_code=500, detail=error_msg)
