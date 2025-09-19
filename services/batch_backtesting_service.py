@@ -16,8 +16,9 @@ class BatchBacktestingService:
     
     def __init__(self):
         self.active_tasks: Dict[str, BatchBacktestingResult] = {}
-        self._semaphore = asyncio.Semaphore(5)  # Максимум 5 одновременных бектестов по умолчанию
+        self._semaphore = asyncio.Semaphore(2)  # Уменьшено до 2 одновременных бектестов для стабильности
         self.backtesting_engine = BacktestingEngineBase()
+        self._startup_delay = 2.0  # Задержка между запусками бэктестов (секунды)
     
     async def start_batch_backtesting(self, config: BatchBacktestingConfig) -> str:
         """Запускает пакетный бектест и возвращает task_id"""
@@ -47,7 +48,9 @@ class BatchBacktestingService:
         result.status = "running"
         
         # Создаем семафор для ограничения количества одновременных бектестов
-        semaphore = asyncio.Semaphore(config.max_concurrent or 5)
+        # Ограничиваем максимум 2 для стабильности, даже если пользователь запросил больше
+        max_concurrent = min(config.max_concurrent or 2, 2)
+        semaphore = asyncio.Semaphore(max_concurrent)
         
         # Создаем задачи для всех конфигураций
         tasks = []
@@ -84,6 +87,10 @@ class BatchBacktestingService:
     ):
         """Выполняет один бектест с ограничением семафора"""
         async with semaphore:
+            # Добавляем задержку между запусками для стабильности
+            if config_index > 0:
+                await asyncio.sleep(self._startup_delay)
+            
             await self._execute_single_backtesting(task_id, config_index, config_item, batch_config)
     
     async def _execute_single_backtesting(
@@ -127,6 +134,24 @@ class BatchBacktestingService:
             
             # Обрабатываем результаты
             if backtesting_results and isinstance(backtesting_results, dict):
+                # Рассчитываем коэффициенты эффективности (Sortino, Calmar, Sharpe)
+                try:
+                    results_data = backtesting_results.get("results", {})
+                    executors_data = backtesting_results.get("executors", [])
+                    
+                    # Вызываем функцию расчета метрик (как в обычном бэктестинге)
+                    from utils.metrics_calculator import calculate_performance_ratios
+                    ratios = calculate_performance_ratios(results_data, executors_data)
+                    
+                    # Обновляем результаты с рассчитанными коэффициентами
+                    results_data.update(ratios)
+                    backtesting_results["results"] = results_data
+                    
+                    logger.info(f"Calculated performance ratios for config {config_index}: {list(ratios.keys())}")
+                    
+                except Exception as e:
+                    logger.error(f"Error calculating performance ratios for config {config_index}: {e}")
+                
                 processed_result = {
                     "config_index": config_index,
                     "config": config_item,

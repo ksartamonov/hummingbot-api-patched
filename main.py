@@ -28,6 +28,7 @@ from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from hummingbot.data_feed.market_data_provider import MarketDataProvider
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
 
@@ -163,6 +164,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add GZip compression middleware for large responses
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 logfire.configure(send_to_logfire="if-token-present", environment=settings.app.logfire_environment, service_name="hummingbot-api")
 logfire.instrument_fastapi(app)
