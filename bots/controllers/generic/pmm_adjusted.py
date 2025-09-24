@@ -1,5 +1,5 @@
 from decimal import Decimal
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Set, Tuple, Union
 
 from pydantic import Field, field_validator
 from pydantic_core.core_schema import ValidationInfo
@@ -309,6 +309,7 @@ class PMMAdjusted(ControllerBase):
         current_pct = self.processed_data["current_base_pct"]
         min_pct = self.config.min_base_pct
         max_pct = self.config.max_base_pct
+        allowed_trade_types = self._resolve_allowed_trade_types(Decimal(str(current_pct)))
         # Calculate skew factors (0 to 1) - how much to scale orders
         if max_pct > min_pct:  # Prevent division by zero
             # For buys: full size at min_pct, decreasing as we approach max_pct
@@ -323,6 +324,8 @@ class PMMAdjusted(ControllerBase):
         # Create executors for each level
         for level_id in levels_to_execute:
             trade_type = self.get_trade_type_from_level_id(level_id)
+            if trade_type not in allowed_trade_types:
+                continue
             level = self.get_level_from_level_id(level_id)
             if trade_type == TradeType.BUY:
                 spread_in_pct = Decimal(buy_spreads[level]) * Decimal(self.processed_data["spread_multiplier"])
@@ -348,6 +351,45 @@ class PMMAdjusted(ControllerBase):
                     executor_config=executor_config
                 ))
         return create_actions
+
+    def _resolve_allowed_trade_types(self, current_pct: Decimal) -> Set[TradeType]:
+        if self.config.position_mode != PositionMode.ONEWAY:
+            return {TradeType.BUY, TradeType.SELL}
+
+        tolerance_value = getattr(self.config, "position_rebalance_threshold_pct", Decimal("0"))
+        if not isinstance(tolerance_value, Decimal):
+            try:
+                tolerance_value = Decimal(str(tolerance_value))
+            except Exception:
+                tolerance_value = Decimal("0")
+        if tolerance_value == Decimal("0"):
+            tolerance_value = Decimal("0.0001")
+
+        active_buy = any(self._executor_matches_side(info, TradeType.BUY) for info in self.executors_info if info.is_active)
+        active_sell = any(self._executor_matches_side(info, TradeType.SELL) for info in self.executors_info if info.is_active)
+
+        if active_buy and not active_sell:
+            return {TradeType.BUY}
+        if active_sell and not active_buy:
+            return {TradeType.SELL}
+
+        target_pct = self.config.target_base_pct
+        if current_pct > target_pct + tolerance_value:
+            return {TradeType.SELL}
+        if current_pct < target_pct - tolerance_value:
+            return {TradeType.BUY}
+        return {TradeType.BUY, TradeType.SELL}
+
+    def _executor_matches_side(self, executor, trade_type: TradeType) -> bool:
+        custom_info = getattr(executor, "custom_info", {}) or {}
+        level_id = custom_info.get("level_id") if isinstance(custom_info, dict) else None
+        if isinstance(level_id, str) and "_" in level_id:
+            try:
+                return self.get_trade_type_from_level_id(level_id) == trade_type
+            except Exception:
+                return False
+        executor_side = getattr(executor, "side", None)
+        return executor_side == trade_type
 
     def get_levels_to_execute(self) -> List[str]:
         working_levels = self.filter_executors(
